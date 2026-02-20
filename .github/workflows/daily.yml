@@ -2,8 +2,10 @@ name: TAPMC Daily Reports
 
 on:
   schedule:
-    # 台北 08:00 = UTC 00:00
-    - cron: "0 0 * * *"
+    # 台北 07:40–07:59 = UTC 23:40–23:59（前一天）
+    - cron: "40-59/2 23 * * *"
+    # 台北 08:00–08:02 = UTC 00:00–00:02（當天）
+    - cron: "0-2/2 0 * * *"
   workflow_dispatch:
 
 permissions:
