@@ -1,8 +1,9 @@
 {
-  "generated_at_taipei": "2026-02-23 08:02:00 +0800",
-  "veg_pdf_sha256": "471e2f87d1c7c7f18898039971c9c2c0521ee7230be7bc8015c818e3214488e0",
+  "date": "2026-02-24",
+  "generated_at_taipei": "2026-02-24 00:41:44 +0800",
+  "veg_pdf_sha256": "42a838dca2cc2f0a284965836617878869fec971f9c50d817af6a203400763f6",
   "dpi": 220,
   "pages": [
-    "veg_p01.png"
+    "veg_2026-02-24_p01.png"
   ]
 }
