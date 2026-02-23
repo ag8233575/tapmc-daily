@@ -18,8 +18,7 @@ STATE_PATH = OUT / "state.json"
 MANIFEST_PATH = OUT / "veg_manifest.json"
 VEG_PDF = OUT / "veg.pdf"
 
-# 你擔心模糊：提高 DPI 會更清楚但檔案會變大
-DPI = 220  # 建議 200~250；如果你覺得還不夠清楚，可改 240
+DPI = 220  # 你原本的設定保留；要更清楚可改 240
 
 def sha256_file(p: Path) -> str:
     h = hashlib.sha256()
@@ -68,14 +67,16 @@ def try_download_veg_pdf(page) -> bool:
     except Exception:
         return False
 
-def render_all_pages(pdf_path: Path) -> list[Path]:
-    # 轉所有頁
+def render_all_pages(pdf_path: Path, date_str: str) -> list[Path]:
+    """
+    轉所有頁，輸出成：veg_YYYY-MM-DD_p01.png, veg_YYYY-MM-DD_p02.png...
+    這樣每天不覆蓋舊檔，LINE/Pages 快取就不會造成昨天/今天混亂。
+    """
     images = convert_from_path(str(pdf_path), dpi=DPI)
     out_files: list[Path] = []
 
-    # 先輸出到 tmp，再 replace，避免產生半張圖
     for i, img in enumerate(images, start=1):
-        filename = f"veg_p{i:02d}.png"
+        filename = f"veg_{date_str}_p{i:02d}.png"
         out_png = PAGES_DIR / filename
         tmp = out_png.with_suffix(".tmp.png")
         img.save(str(tmp), "PNG")
@@ -84,18 +85,11 @@ def render_all_pages(pdf_path: Path) -> list[Path]:
 
     return out_files
 
-def clean_extra_pages(keep: set[str]):
-    # 如果今天頁數變少，把舊的多餘頁刪掉（避免 LINE 推到舊頁）
-    for p in PAGES_DIR.glob("veg_p*.png"):
-        if p.name not in keep:
-            try:
-                p.unlink()
-            except Exception:
-                pass
-
 def main():
     taipei = timezone(timedelta(hours=8))
-    now_tpe = datetime.now(taipei).strftime("%Y-%m-%d %H:%M:%S %z")
+    now_dt = datetime.now(taipei)
+    now_tpe = now_dt.strftime("%Y-%m-%d %H:%M:%S %z")
+    date_str = now_dt.strftime("%Y-%m-%d")  # 今天（台北日期）
 
     state = load_json(STATE_PATH)
     prev_hash = state.get("veg_pdf_sha256", "")
@@ -132,17 +126,16 @@ def main():
         save_json(STATE_PATH, state)
         return
 
-    # 轉全頁
-    pages = render_all_pages(VEG_PDF)
-    keep_names = {p.name for p in pages}
-    clean_extra_pages(keep_names)
+    # 轉全頁（日期檔名）
+    pages = render_all_pages(VEG_PDF, date_str)
 
-    # manifest：提供 Apps Script 知道有哪些頁面、用哪個 hash 判斷更新
+    # manifest：提供 Apps Script 知道「今天是哪天」與「今天有哪些檔」
     manifest = {
+        "date": date_str,
         "generated_at_taipei": now_tpe,
         "veg_pdf_sha256": veg_hash,
         "dpi": DPI,
-        "pages": [p.name for p in pages],  # e.g. veg_p01.png, veg_p02.png...
+        "pages": [p.name for p in pages],  # e.g. veg_2026-02-24_p01.png ...
     }
     save_json(MANIFEST_PATH, manifest)
 
@@ -151,6 +144,7 @@ def main():
         "status": "updated",
         "veg_pdf_sha256": veg_hash,
         "page_count": len(pages),
+        "date": date_str,
     })
     save_json(STATE_PATH, state)
 
