@@ -45,7 +45,7 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git add docs/veg_manifest.json docs/veg_pages/*.png docs/state.json docs/veg.pdf || true
+          git add docs/veg_manifest.json docs/veg_pages/*.png docs/state.json docs/veg.pdf docs/veg_web.png || true
           git diff --cached --quiet && echo "No changes" && exit 0
 
           git commit -m "Update veg pages"
