@@ -1,5 +1,6 @@
 import json
 import hashlib
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -20,11 +21,15 @@ STATE_PATH = OUT / "state.json"
 MANIFEST_PATH = OUT / "veg_manifest.json"
 VEG_PDF = OUT / "veg.pdf"
 
-# 清晰度：你若覺得模糊可調 240，但檔案會變大
+# 清晰度：220 通常夠清楚；若你覺得仍模糊可 240
 DPI = 220
 
-# 用來判斷「PDF是真的有資料」的關鍵字（命中任一即可）
-DATA_KEYWORDS = ["LA", "LC", "LB", "甘藍", "大白菜", "小白菜", "青江菜", "蔬菜類"]
+# 這些字通常「模板 PDF」不會出現；有出現才算真的有資料
+DATA_KEYWORDS = [
+    "蔬菜類",
+    "LA", "LC", "LB", "LD", "LH", "LI",
+    "甘藍", "大白菜", "小白菜", "青江菜", "菠菜", "高麗菜"
+]
 
 def sha256_file(p: Path) -> str:
     h = hashlib.sha256()
@@ -44,31 +49,137 @@ def load_json(p: Path):
 def save_json(p: Path, obj: dict):
     p.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
 
-def roc_date_str(dt_tpe: datetime) -> str:
-    roc_year = dt_tpe.year - 1911
-    return f"{roc_year:03d}/{dt_tpe.month:02d}/{dt_tpe.day:02d}"
+def taipei_now():
+    taipei = timezone(timedelta(hours=8))
+    return datetime.now(taipei)
 
-def pdf_has_data(pdf_path: Path) -> bool:
+def ymd_taipei():
+    return taipei_now().strftime("%Y-%m-%d")
+
+def roc_date_str(dt: datetime) -> str:
+    # 115/02/24 這種格式
+    roc_year = dt.year - 1911
+    return f"{roc_year:03d}/{dt.month:02d}/{dt.day:02d}"
+
+def pdf_text(pdf_path: Path) -> str:
     """
-    用 pdftotext 檢查 PDF 是否包含資料關鍵字。
-    這能精準抓出「框線模板 PDF」。
+    用 poppler 的 pdftotext 抽文字（workflow 已裝 poppler-utils）
     """
     try:
-        r = subprocess.run(
+        # -layout 讓表格字比較完整
+        res = subprocess.run(
             ["pdftotext", "-layout", str(pdf_path), "-"],
-            capture_output=True,
-            text=True,
             check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
-        txt = (r.stdout or "") + "\n" + (r.stderr or "")
-        txt = txt.replace("\x00", "")
-        return any(kw in txt for kw in DATA_KEYWORDS)
+        return (res.stdout or "") + "\n" + (res.stderr or "")
+    except Exception:
+        return ""
+
+def pdf_has_real_data(pdf_path: Path) -> bool:
+    """
+    判斷是否為「模板/尚未生成」：
+    - 真正有資料的 PDF 通常會有 '蔬菜類' 和一些代碼/品名
+    - 模板常常只有框線、少量固定字
+    """
+    txt = pdf_text(pdf_path)
+    if not txt.strip():
+        return False
+
+    hit = 0
+    for k in DATA_KEYWORDS:
+        if k in txt:
+            hit += 1
+
+    # 命中 2 個以上關鍵字，通常就真的有資料
+    return hit >= 2
+
+def try_download_veg_pdf(page, expected_roc_date: str) -> bool:
+    """
+    走「下載 PDF」路徑。要做三件事：
+    1) 選蔬菜
+    2) 日期填今天（ROC）
+    3) 按查詢（很多網站要查詢後報表才會生成）
+    """
+    page.goto(URL, wait_until="domcontentloaded")
+    page.wait_for_timeout(800)
+
+    # 有些手機版/桌機版 DOM 不一樣，先盡量滾到按鈕區
+    try:
+        page.mouse.wheel(0, 1200)
+        page.wait_for_timeout(300)
+    except Exception:
+        pass
+
+    # 類別選蔬菜（下拉）
+    # 你的截圖顯示有「果菜類別」下拉，值包含「蔬菜」
+    try:
+        # 先點選下拉，再點「蔬菜」
+        page.get_by_text("蔬菜", exact=True).first.click(timeout=2000)
+    except Exception:
+        # 若上面點不到，改用 select 方式（保險）
+        try:
+            page.locator("select").first.select_option(label="蔬菜")
+        except Exception:
+            pass
+
+    # 日期欄位填今天（ROC）
+    # 你截圖日期欄像是 input；用 placeholder 或 type=date 可能不同
+    # 這裡用「找第一個帶日期格式的 input」的保守策略
+    try:
+        # 優先找有 115/xx/xx 的欄位
+        inputs = page.locator("input")
+        n = inputs.count()
+        filled = False
+        for i in range(min(n, 8)):
+            el = inputs.nth(i)
+            val = ""
+            try:
+                val = el.input_value(timeout=300)
+            except Exception:
+                pass
+            # 如果欄位目前像日期，就填
+            if "/" in (val or "") or (val or "").isdigit():
+                el.fill(expected_roc_date, timeout=2000)
+                filled = True
+                break
+        if not filled:
+            # 退而求其次：直接填第一個 input
+            inputs.first.fill(expected_roc_date, timeout=2000)
+    except Exception:
+        pass
+
+    # 點查詢（非常重要：很多站要查詢後 PDF 才會是「有資料」）
+    try:
+        page.get_by_role("button", name=re.compile("查詢")).click(timeout=3000)
+        page.wait_for_timeout(1500)
+    except Exception:
+        try:
+            page.get_by_text("查詢").first.click(timeout=3000)
+            page.wait_for_timeout(1500)
+        except Exception:
+            pass
+
+    # 下載 PDF
+    try:
+        with page.expect_download(timeout=30000) as d:
+            # 你的頁面按鈕文字是「下載PDF檔」
+            try:
+                page.get_by_role("button", name=re.compile("下載PDF")).click(timeout=5000)
+            except Exception:
+                page.get_by_text("下載PDF檔").first.click(timeout=5000)
+
+        d.value.save_as(str(VEG_PDF))
+        return True
     except Exception:
         return False
 
 def render_all_pages(pdf_path: Path) -> list[Path]:
     images = convert_from_path(str(pdf_path), dpi=DPI)
     out_files: list[Path] = []
+
     for i, img in enumerate(images, start=1):
         filename = f"veg_p{i:02d}.png"
         out_png = PAGES_DIR / filename
@@ -76,6 +187,7 @@ def render_all_pages(pdf_path: Path) -> list[Path]:
         img.save(str(tmp), "PNG")
         tmp.replace(out_png)
         out_files.append(out_png)
+
     return out_files
 
 def clean_extra_pages(keep: set[str]):
@@ -86,203 +198,76 @@ def clean_extra_pages(keep: set[str]):
             except Exception:
                 pass
 
-def pick_veg_in_select(page) -> bool:
-    """
-    優先用 <select> 的 select_option 選蔬菜（比點文字穩）
-    """
-    selects = page.locator("select")
-    if selects.count() == 0:
-        # 沒有 select 就退回點文字
-        try:
-            page.get_by_text("蔬菜").first.click(timeout=3000)
-            return True
-        except Exception:
-            return False
-
-    for i in range(selects.count()):
-        sel = selects.nth(i)
-        try:
-            options_text = sel.locator("option").all_inner_texts()
-            if any("蔬菜" in t for t in options_text):
-                # 先用 label
-                try:
-                    sel.select_option(label="蔬菜")
-                    return True
-                except Exception:
-                    pass
-                # 再用 value
-                vals = sel.locator("option").evaluate_all(
-                    "els => els.map(e => ({v:e.value, t:(e.textContent||'').trim()}))"
-                )
-                for it in vals:
-                    if it and "蔬菜" in (it.get("t") or ""):
-                        sel.select_option(value=it.get("v"))
-                        return True
-        except Exception:
-            continue
-    return False
-
-def fill_date(page, roc_date: str) -> bool:
-    """
-    填日期（民國）
-    """
-    inputs = page.locator("input")
-    n = inputs.count()
-    if n == 0:
-        return False
-
-    # 優先找目前 value 長得像日期的欄位
-    for i in range(min(n, 12)):
-        inp = inputs.nth(i)
-        try:
-            val = inp.input_value(timeout=500)
-            if "/" in val and len(val) >= 8:
-                inp.click(timeout=1500)
-                inp.fill(roc_date, timeout=1500)
-                return True
-        except Exception:
-            continue
-
-    # 找不到就填第一個（備援）
-    try:
-        inputs.first.click(timeout=1500)
-        inputs.first.fill(roc_date, timeout=1500)
-        return True
-    except Exception:
-        return False
-
-def click_query(page) -> bool:
-    try:
-        page.get_by_role("button", name="查詢").click(timeout=4000)
-        return True
-    except Exception:
-        pass
-    try:
-        page.get_by_text("查詢").first.click(timeout=4000)
-        return True
-    except Exception:
-        return False
-
-def wait_for_data_on_page(page) -> bool:
-    """
-    等畫面真的出現資料關鍵字（避免下載模板）
-    """
-    for kw in DATA_KEYWORDS:
-        try:
-            page.get_by_text(kw).first.wait_for(timeout=8000)
-            return True
-        except Exception:
-            continue
-    return False
-
-def download_pdf(page) -> bool:
-    """
-    點下載 PDF
-    """
-    try:
-        with page.expect_download(timeout=30000) as d:
-            try:
-                page.get_by_role("button", name="下載PDF檔").click(timeout=6000)
-            except Exception:
-                page.get_by_text("下載PDF檔").first.click(timeout=6000)
-        d.value.save_as(str(VEG_PDF))
-        return VEG_PDF.exists() and VEG_PDF.stat().st_size > 10_000
-    except Exception:
-        return False
-
 def main():
-    taipei = timezone(timedelta(hours=8))
-    now_dt = datetime.now(taipei)
-    now_tpe = now_dt.strftime("%Y-%m-%d %H:%M:%S %z")
-    today_tpe = now_dt.strftime("%Y-%m-%d")
-    roc_today = roc_date_str(now_dt)
-
-    # 這裡設定：最多嘗試到台北 08:02:00（避免太早抓到模板）
-    deadline = now_dt.replace(hour=8, minute=2, second=0, microsecond=0)
-    # 如果 workflow 在 00:xx UTC 跑到台北早上，deadline 是今天 08:02
-    # 若你手動在下午跑，也別等到明天，最多等 2 分鐘
-    if now_dt > deadline:
-        deadline = now_dt + timedelta(minutes=2)
+    now = taipei_now()
+    now_tpe_str = now.strftime("%Y-%m-%d %H:%M:%S %z")
+    today_ymd = now.strftime("%Y-%m-%d")
+    today_roc = roc_date_str(now)
 
     state = load_json(STATE_PATH)
-    prev_hash = state.get("veg_pdf_sha256", "")
+
+    # =========
+    # 下載 + 驗證（模板就等一下再重試）
+    # =========
+    max_attempts = 10
+    sleep_seconds = 35  # 每次模板就等 35 秒再重試（總長約 6 分鐘）
+    ok_download = False
+    ok_data = False
+    detail = ""
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-        context = browser.new_context(locale="zh-TW", timezone_id="Asia/Taipei")
-        page = context.new_page()
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
 
-        attempt = 0
-        got_valid_pdf = False
-        last_status = ""
-
-        while datetime.now(taipei) <= deadline:
-            attempt += 1
-            last_status = f"attempt_{attempt}"
-
-            page.goto(URL, wait_until="domcontentloaded")
-            page.wait_for_timeout(1000)
-
-            pick_veg_in_select(page)
-            fill_date(page, roc_today)
-
-            click_query(page)
-            page.wait_for_timeout(1200)
-
-            # 等資料出現（若沒出現也繼續下載，但後面會用 pdftotext 驗證）
-            wait_for_data_on_page(page)
-
-            ok = download_pdf(page)
-            if not ok:
-                last_status = f"{last_status}_pdf_download_failed"
-                time.sleep(10)
+        for attempt in range(1, max_attempts + 1):
+            ok_download = try_download_veg_pdf(page, today_roc)
+            if not ok_download or not VEG_PDF.exists():
+                detail = f"attempt_{attempt}_pdf_download_failed"
+                time.sleep(2)
                 continue
 
-            # 驗證是否真有資料
-            if pdf_has_data(VEG_PDF):
-                got_valid_pdf = True
-                last_status = f"{last_status}_pdf_ok"
+            # 下載到檔後，立刻判斷是不是模板
+            if pdf_has_real_data(VEG_PDF):
+                ok_data = True
+                detail = f"attempt_{attempt}_pdf_ok"
                 break
             else:
-                # 這就是你遇到的「框線模板 PDF」
-                last_status = f"{last_status}_pdf_template_no_data"
-                # 等一下再試（常見：站方 7:40~8:00 才完成）
-                time.sleep(20)
+                ok_data = False
+                detail = f"attempt_{attempt}_pdf_template_no_data"
+                # 模板：等一下再重抓
+                time.sleep(sleep_seconds)
 
-        context.close()
         browser.close()
 
-    if not got_valid_pdf:
-        # 不更新 manifest/pages：避免 Apps Script 推播錯圖
+    # =========
+    # 若沒拿到「有資料」的 PDF：只更新 state，不動 manifest/pages
+    # =========
+    if not ok_data:
         state.update({
-            "time_taipei": now_tpe,
+            "time_taipei": now_tpe_str,
             "status": "not_ready_or_template",
-            "detail": last_status,
+            "date": today_ymd,
+            "detail": detail,
         })
+        # 若有下載到檔，仍可存 hash 方便追查
+        if VEG_PDF.exists():
+            state["veg_pdf_sha256"] = sha256_file(VEG_PDF)
         save_json(STATE_PATH, state)
         return
 
+    # =========
+    # 有資料：才轉圖、更新 manifest
+    # =========
     veg_hash = sha256_file(VEG_PDF)
 
-    # PDF 沒變就不更新（省額度）
-    if veg_hash == prev_hash and MANIFEST_PATH.exists():
-        state.update({
-            "time_taipei": now_tpe,
-            "status": "no_change",
-            "veg_pdf_sha256": veg_hash,
-        })
-        save_json(STATE_PATH, state)
-        return
-
-    # 轉全頁 PNG
     pages = render_all_pages(VEG_PDF)
     keep_names = {p.name for p in pages}
     clean_extra_pages(keep_names)
 
     manifest = {
-        "date": today_tpe,
-        "generated_at_taipei": now_tpe,
-        "source": "pdf",
+        "date": today_ymd,
+        "updated_at": now.strftime("%Y-%m-%d %H:%M"),  # 用抓取時間；你若要改成 PDF 內的更新時間也可再加
+        "generated_at_taipei": now_tpe_str,
         "veg_pdf_sha256": veg_hash,
         "dpi": DPI,
         "pages": [p.name for p in pages],
@@ -290,9 +275,10 @@ def main():
     save_json(MANIFEST_PATH, manifest)
 
     state.update({
-        "time_taipei": now_tpe,
-        "status": "updated_pdf",
-        "detail": last_status,
+        "time_taipei": now_tpe_str,
+        "status": "updated",
+        "date": today_ymd,
+        "detail": detail,
         "veg_pdf_sha256": veg_hash,
         "page_count": len(pages),
     })
