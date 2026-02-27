@@ -176,11 +176,11 @@ def main():
     state = load_json(STATE_PATH)
 
     # 🚨🚨🚨 測試期間依然保持註解狀態 🚨🚨🚨
-    # if not in_window(now_dt):
-    #     print("⏳ 目前不在允許的時間窗內，跳過執行。")
-    #     state.update({"time_taipei": now_str, "status": "skip_outside_window", "date": today_str, "detail": "skip_run_outside_0730_0810"})
-    #     save_json(STATE_PATH, state)
-    #     return
+     if not in_window(now_dt):
+         print("⏳ 目前不在允許的時間窗內，跳過執行。")
+         state.update({"time_taipei": now_str, "status": "skip_outside_window", "date": today_str, "detail": "skip_run_outside_0730_0810"})
+         save_json(STATE_PATH, state)
+         return
 
     print("🚀 開始執行抓取流程...")
     is_success = False  
