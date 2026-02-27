@@ -190,7 +190,17 @@ def main():
 
         browser.close()
 
-    # 10 次仍拿不到「有內容」PDF：只寫 state，不要動 manifest/pages
+    # 10 次仍拿不到「有內容」PDF：寫 state + 寫 manifest（pages 空），但不要動 veg_pages
+    manifest = {
+        "date": today,
+        "generated_at_taipei": now_tpe,
+        "status": "not_ready_or_template",
+        "dpi": DPI,
+        "pages": [],
+        "detail": last_err or "all_attempts_failed",
+    }
+    save_json(MANIFEST_PATH, manifest)
+
     state.update({
         "time_taipei": now_tpe,
         "status": "not_ready_or_template",
