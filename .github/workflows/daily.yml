@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: tapmc-daily-veg
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   run:
@@ -45,9 +45,11 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          git add docs/veg_manifest.json docs/veg_pages/*.png docs/state.json || true
+          # 👇 這裡改成了直接把整個 docs 資料夾加進去，就不會漏抓檔案了
+          git add docs/ || true
           git diff --cached --quiet && echo "No changes" && exit 0
 
           git commit -m "Update veg pages"
-          git pull --rebase
+          # 👇 這裡加上 --autostash，讓 Git 遇到衝突時能自動妥善處理
+          git pull --rebase --autostash
           git push
