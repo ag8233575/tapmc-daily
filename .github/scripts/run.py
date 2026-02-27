@@ -141,8 +141,7 @@ def pdf_looks_like_template(pdf_path: Path) -> tuple[bool, dict]:
 
         info = {"dark_ratio": round(ratio, 6), "sample_size": [img_small.size[0], img_small.size[1]]}
 
-        # 門檻可調：如果你之後發現「真的有資料但被誤判模板」
-        # 就把 0.012 調更低（例如 0.009）
+        # 門檻可調：如果你之後發現「真的有資料但被誤判模板」就把 0.012 調更低
         is_template = ratio < 0.012
         return is_template, info
 
@@ -170,7 +169,6 @@ def render_all_pages(pdf_path: Path) -> list[Path]:
 def clean_extra_pages(keep: set[str]):
     """
     如果今天頁數變少，把多餘舊頁刪掉（避免推播舊頁）
-    注意：只有在「成功更新」時才會呼叫，避免失敗時誤刪造成 404。
     """
     for p in PAGES_DIR.glob("veg_p*.png"):
         if p.name not in keep:
@@ -186,20 +184,25 @@ def main():
 
     state = load_json(STATE_PATH)
 
-    # 1) 時間窗外：不動舊的 manifest/pages，避免 404；只記錄 state
-    if not in_window(now_dt):
-        state.update({
-            "time_taipei": now_str,
-            "status": "skip_outside_window",
-            "date": today_str,
-            "detail": "skip_run_outside_0730_0810",
-        })
-        save_json(STATE_PATH, state)
-        return
+    # 🚨🚨🚨 【測試期間先註解掉時間鎖】 🚨🚨🚨
+    # 等您確認手動測試一切順利後，再把下面這幾行的 '#' 拿掉
+    # ----------------------------------------------------
+    # if not in_window(now_dt):
+    #     print("⏳ 目前不在允許的時間窗內，跳過執行。")
+    #     state.update({
+    #         "time_taipei": now_str,
+    #         "status": "skip_outside_window",
+    #         "date": today_str,
+    #         "detail": "skip_run_outside_0730_0810",
+    #     })
+    #     save_json(STATE_PATH, state)
+    #     return
+    # ----------------------------------------------------
 
-    # 2) 下載 PDF（指定台北時區 context，避免 UTC 造成選錯日期）
-    ok = False
+    print("🚀 開始執行抓取流程...")
+    is_success = False  
     last_detail = ""
+    
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(
@@ -208,53 +211,51 @@ def main():
         )
         page = context.new_page()
 
-        for attempt in range(1, 6):  # 多給幾次，但不要太久
+        for attempt in range(1, 6):  # 嘗試 5 次
+            print(f"--- 嘗試第 {attempt} 次下載 ---")
             ok = try_download_veg_pdf(page)
             if not ok or not VEG_PDF.exists():
                 last_detail = f"attempt_{attempt}_download_failed"
+                print(f"⚠️ 下載失敗或檔案不存在，等待 2 秒後重試...")
+                page.wait_for_timeout(2000)
                 continue
 
-            # 3) 檢查是否模板/未就緒
+            # 檢查是否模板/未就緒
             is_tmpl, info = pdf_looks_like_template(VEG_PDF)
             if is_tmpl:
                 last_detail = f"attempt_{attempt}_pdf_template_no_data"
-                # 不覆蓋舊 manifest/pages，只更新 state 記錄
-                state.update({
-                    "time_taipei": now_str,
-                    "status": "not_ready_or_template",
-                    "date": today_str,
-                    "detail": last_detail,
-                    "template_check": info,
-                    "veg_pdf_sha256": sha256_file(VEG_PDF),
-                    "page_count": 1,
-                })
-                save_json(STATE_PATH, state)
-                # 直接 return：避免把模板轉成圖片覆蓋掉「上一份有效內容」
-                context.close()
-                browser.close()
-                return
+                print(f"⚠️ 抓到空白模板 (深色比例 {info.get('dark_ratio')})，等待 3 秒後重試...")
+                # 抓到模板時等待一下，繼續下一次迴圈重新抓
+                page.wait_for_timeout(3000) 
+                continue
 
-            # 不是模板，視為成功取得有效資料
+            # 不是模板，代表成功取得有效資料！
+            print(f"✅ 成功取得有效 PDF！(深色比例 {info.get('dark_ratio')})")
+            is_success = True
             break
 
         context.close()
         browser.close()
 
-    if not ok or not VEG_PDF.exists():
+    # 迴圈結束後，檢查是否真的成功
+    if not is_success:
+        print(f"❌ 5 次嘗試都失敗，最後狀態: {last_detail}")
         state.update({
             "time_taipei": now_str,
-            "status": "veg_download_failed",
+            "status": "not_ready_or_template" if "template" in last_detail else "veg_download_failed",
             "date": today_str,
-            "detail": last_detail or "download_failed",
+            "detail": last_detail,
         })
         save_json(STATE_PATH, state)
-        return
+        return  # 終止程式，保護您的舊圖片不被錯誤覆蓋
 
+    # 處理成功的 PDF
     veg_hash = sha256_file(VEG_PDF)
-
-    # 4) 如果 PDF hash 沒變且 manifest 存在：不更新（避免一直 commit）
     prev_hash = state.get("veg_pdf_sha256", "")
+    
+    # 如果 PDF hash 沒變且 manifest 存在：不更新
     if veg_hash == prev_hash and MANIFEST_PATH.exists():
+        print("ℹ️ PDF 內容無變動，跳過轉檔與更新。")
         state.update({
             "time_taipei": now_str,
             "status": "no_change",
@@ -264,7 +265,8 @@ def main():
         save_json(STATE_PATH, state)
         return
 
-    # 5) 轉 PNG（只有到這裡才會覆蓋舊資料）
+    # 轉 PNG
+    print("🖼️ 開始將 PDF 轉成 PNG...")
     pages = render_all_pages(VEG_PDF)
     keep_names = {p.name for p in pages}
     clean_extra_pages(keep_names)
@@ -286,6 +288,7 @@ def main():
         "page_count": len(pages),
     })
     save_json(STATE_PATH, state)
+    print("🎉 所有流程更新完成！")
 
 if __name__ == "__main__":
     main()
