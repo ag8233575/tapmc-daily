@@ -87,7 +87,8 @@ def try_download_veg_pdf(page) -> bool:
 
     # 2️⃣ 點查詢並等待資料真正載入完成
     try:
-        page.get_by_text("查詢").first.click(timeout=3000)
+        # 🤖 明確指定尋找名稱為「查詢」的「按鈕 (button)」
+        page.get_by_role("button", name="查詢", exact=True).first.click(timeout=5000)
 
         # 等待網路請求完全結束
         page.wait_for_load_state("networkidle")
@@ -103,9 +104,11 @@ def try_download_veg_pdf(page) -> bool:
     try:
         with page.expect_download(timeout=30000) as d:
             try:
-                page.get_by_text("下載PDF檔").first.click(timeout=5000)
+                # 🤖 明確指定尋找名稱為「下載PDF檔」的「按鈕 (button)」
+                page.get_by_role("button", name="下載PDF檔", exact=True).first.click(timeout=5000)
             except Exception:
-                page.get_by_text("PDF").first.click(timeout=5000)
+                # 備案：萬一名字微調，可以點包含 PDF 的按鈕
+                page.get_by_role("button", name="PDF").first.click(timeout=5000)
 
         d.value.save_as(str(VEG_PDF))
         return True
@@ -117,8 +120,6 @@ def try_download_veg_pdf(page) -> bool:
 def pdf_looks_like_template(pdf_path: Path) -> tuple[bool, dict]:
     """
     判斷下載到的 PDF 是否「像模板/空白（尚未出資料）」。
-    做法：先用較低 DPI 渲染第 1 頁 → 計算深色像素比例。
-    模板/空白通常只有框線+標題，深色像素比例會很低。
     """
     info = {}
     try:
@@ -146,12 +147,11 @@ def pdf_looks_like_template(pdf_path: Path) -> tuple[bool, dict]:
         return is_template, info
 
     except Exception as e:
-        # 無法判斷時，不要誤傷：回傳 False（當作不是模板）
         return False, {"reason": "template_check_error", "error": str(e)}
 
 def render_all_pages(pdf_path: Path) -> list[Path]:
     """
-    轉全頁成 PNG，輸出到 docs/veg_pages/veg_pXX.png
+    轉全頁成 PNG
     """
     images = convert_from_path(str(pdf_path), dpi=DPI)
     out_files: list[Path] = []
@@ -167,9 +167,6 @@ def render_all_pages(pdf_path: Path) -> list[Path]:
     return out_files
 
 def clean_extra_pages(keep: set[str]):
-    """
-    如果今天頁數變少，把多餘舊頁刪掉（避免推播舊頁）
-    """
     for p in PAGES_DIR.glob("veg_p*.png"):
         if p.name not in keep:
             try:
@@ -225,7 +222,6 @@ def main():
             if is_tmpl:
                 last_detail = f"attempt_{attempt}_pdf_template_no_data"
                 print(f"⚠️ 抓到空白模板 (深色比例 {info.get('dark_ratio')})，等待 3 秒後重試...")
-                # 抓到模板時等待一下，繼續下一次迴圈重新抓
                 page.wait_for_timeout(3000) 
                 continue
 
