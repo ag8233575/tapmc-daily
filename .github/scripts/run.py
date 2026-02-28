@@ -1,3 +1,4 @@
+import os
 import json
 import hashlib
 from pathlib import Path
@@ -25,9 +26,9 @@ DPI = 220
 # 台北時區
 TPE_TZ = timezone(timedelta(hours=8))
 
-# 允許更新的時間窗（台北時間）
-WINDOW_START = dtime(7, 30)
-WINDOW_END = dtime(8, 10)
+# 🌟 允許更新的時間窗（台北時間）：提早至 07:20 開始，08:05 結束
+WINDOW_START = dtime(7, 20)
+WINDOW_END = dtime(8, 5)
 
 def sha256_file(p: Path) -> str:
     h = hashlib.sha256()
@@ -57,7 +58,7 @@ def in_window(dt: datetime) -> bool:
     t = dt.time()
     return (t >= WINDOW_START) and (t <= WINDOW_END)
 
-# 🌟 新增的終極武器：只點擊畫面上真正「可見」的按鈕
+# 新增的終極武器：只點擊畫面上真正「可見」的按鈕
 def click_visible_text(page, text_to_find: str) -> bool:
     """找出畫面上所有符合文字的元素，並點擊肉眼'可見'的那一個"""
     elements = page.get_by_text(text_to_find, exact=True)
@@ -175,10 +176,12 @@ def main():
 
     state = load_json(STATE_PATH)
 
-# 🚨🚨🚨 測試期間依然保持註解狀態 🚨🚨🚨
-    if not in_window(now_dt):
+    # 🌟 自動偵測：如果是我們去 GitHub 畫面上「手動點擊」測試的，就忽略時間限制
+    is_manual_trigger = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+
+    if not is_manual_trigger and not in_window(now_dt):
         print("⏳ 目前不在允許的時間窗內，跳過執行。")
-        state.update({"time_taipei": now_str, "status": "skip_outside_window", "date": today_str, "detail": "skip_run_outside_0730_0810"})
+        state.update({"time_taipei": now_str, "status": "skip_outside_window", "date": today_str, "detail": "skip_run_outside_0720_0805"})
         save_json(STATE_PATH, state)
         return
 
