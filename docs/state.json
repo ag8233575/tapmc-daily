@@ -1,8 +1,8 @@
 {
-  "time_taipei": "2026-03-01 13:11:33 +0800",
-  "status": "skip_outside_window",
-  "veg_pdf_sha256": "310db5852a0a1561fae3ea34dfabd6215671fe7ac60eb30afd6ad89e9dae2b87",
+  "time_taipei": "2026-03-02 07:58:43 +0800",
+  "status": "updated",
+  "veg_pdf_sha256": "95e77dc57eb6a9bef068a8ab2b185419d0def53abfbda69b76fc4e8110d82ae7",
   "page_count": 1,
-  "date": "2026-03-01",
+  "date": "2026-03-02",
   "detail": "skip_run_outside_0720_0805"
 }
