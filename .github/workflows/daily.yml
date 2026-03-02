@@ -2,10 +2,10 @@ name: TAPMC Daily Reports (VEG only)
 
 on:
   schedule:
-    # 台北 07:40–07:59 = UTC 23:40–23:59（前一天）
-    - cron: "40-59/2 23 * * *"
-    # 台北 08:00–08:02 = UTC 00:00–00:02（當天）
-    - cron: "0-2/2 0 * * *"
+    # 台北 07:20–07:58 = UTC 23:20–23:58（前一天），每 2 分鐘一班車
+    - cron: "20-59/2 23 * * *"
+    # 台北 08:00–08:04 = UTC 00:00–00:04（當天），每 2 分鐘一班車
+    - cron: "0-4/2 0 * * *"
   workflow_dispatch:
 
 permissions:
@@ -13,7 +13,8 @@ permissions:
 
 concurrency:
   group: tapmc-daily-veg
-  cancel-in-progress: true
+  # 👇 關鍵修復：改為 false，遇到重疊時排隊等候，不殺死正在執行的任務！
+  cancel-in-progress: false
 
 jobs:
   run:
@@ -45,11 +46,11 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # 👇 這裡改成了直接把整個 docs 資料夾加進去，就不會漏抓檔案了
+          # 確保 docs 資料夾被完整加入
           git add docs/ || true
           git diff --cached --quiet && echo "No changes" && exit 0
 
           git commit -m "Update veg pages"
-          # 👇 這裡加上 --autostash，讓 Git 遇到衝突時能自動妥善處理
+          # 妥善處理 Git 衝突
           git pull --rebase --autostash
           git push
