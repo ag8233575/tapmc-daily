@@ -21,7 +21,7 @@ MANIFEST_PATH = OUT / "veg_manifest.json"
 VEG_PDF = OUT / "veg.pdf"
 
 # 圖片清晰度
-DPI = 220  
+DPI = 220
 
 # 台北時區
 TPE_TZ = timezone(timedelta(hours=8))
@@ -186,7 +186,7 @@ def main():
         return
 
     print("🚀 開始執行抓取流程...")
-    is_success = False  
+    is_success = False
     last_detail = ""
     
     with sync_playwright() as p:
@@ -195,7 +195,7 @@ def main():
         context = browser.new_context(
             locale="zh-TW",
             timezone_id="Asia/Taipei",
-            viewport={'width': 1280, 'height': 800} 
+            viewport={'width': 1280, 'height': 800}
         )
         page = context.new_page()
 
@@ -212,7 +212,7 @@ def main():
             if is_tmpl:
                 last_detail = f"attempt_{attempt}_pdf_template_no_data"
                 print(f"⚠️ 抓到空白模板 (深色比例 {info.get('dark_ratio')})，等待 3 秒後重試...")
-                page.wait_for_timeout(3000) 
+                page.wait_for_timeout(3000)
                 continue
 
             print(f"✅ 成功取得有效 PDF！(深色比例 {info.get('dark_ratio')})")
@@ -226,7 +226,7 @@ def main():
         print(f"❌ 5 次嘗試都失敗，最後狀態: {last_detail}")
         state.update({"time_taipei": now_str, "status": "not_ready_or_template" if "template" in last_detail else "veg_download_failed", "date": today_str, "detail": last_detail})
         save_json(STATE_PATH, state)
-        return  
+        return
 
     veg_hash = sha256_file(VEG_PDF)
     prev_hash = state.get("veg_pdf_sha256", "")
