@@ -32,10 +32,12 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Python packages
-        run: |
-          pip install playwright pdf2image pillow
-          playwright install --with-deps chromium
+      # 修正：快取 pip 套件，避免每次重新下載
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-playwright-pdf2image-pillow
 
       # 修正：快取 Playwright 瀏覽器，避免每次重新下載（省 2–3 分鐘）
       - name: Cache Playwright browsers
@@ -43,6 +45,11 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}
+
+      - name: Install Python packages
+        run: |
+          pip install playwright pdf2image pillow
+          playwright install --with-deps chromium
 
       - name: Run script (veg only)
         run: python .github/scripts/run.py
