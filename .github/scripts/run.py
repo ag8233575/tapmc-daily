@@ -26,9 +26,9 @@ DPI = 220
 # 台北時區
 TPE_TZ = timezone(timedelta(hours=8))
 
-# 🌟 允許更新的時間窗（台北時間）：提早至 07:20 開始，08:05 結束
+# 🌟 允許更新的時間窗（台北時間）：07:20 開始，08:04 結束（與 cron 對齊）
 WINDOW_START = dtime(7, 20)
-WINDOW_END = dtime(8, 5)
+WINDOW_END = dtime(8, 4)  # 修正：與 cron 00:04 (台北 08:04) 對齊
 
 def sha256_file(p: Path) -> str:
     h = hashlib.sha256()
@@ -58,17 +58,14 @@ def in_window(dt: datetime) -> bool:
     t = dt.time()
     return (t >= WINDOW_START) and (t <= WINDOW_END)
 
-# 新增的終極武器：只點擊畫面上真正「可見」的按鈕
 def click_visible_text(page, text_to_find: str) -> bool:
-    """找出畫面上所有符合文字的元素，並點擊肉眼'可見'的那一個"""
+    """找出畫面上所有符合文字的元素，並點擊肉眼可見的那一個"""
     elements = page.get_by_text(text_to_find, exact=True)
     try:
-        # 先等待元素出現在網頁原始碼中
         elements.first.wait_for(state="attached", timeout=3000)
     except Exception:
         pass
 
-    # 掃描所有找到的同名元素
     for i in range(elements.count()):
         if elements.nth(i).is_visible():
             elements.nth(i).click(timeout=5000)
@@ -101,12 +98,15 @@ def try_download_veg_pdf(page) -> bool:
 
     # 2️⃣ 點查詢並等待資料載入
     try:
-        # 使用我們寫好的終極武器來點擊可見的「查詢」
         if not click_visible_text(page, "查詢"):
-            # 備案：如果找不到精準的，用寬鬆模式隨便點一個
-            page.locator("text=查詢").first.click(timeout=5000)
+            # 備案：確認可見後再點擊
+            btn = page.locator("text=查詢").first
+            if btn.is_visible():
+                btn.click(timeout=5000)
+            else:
+                print("⚠️ 查詢按鈕不可見")
+                return False
 
-        # 等待資料轉圈圈結束
         page.wait_for_load_state("networkidle")
         page.wait_for_timeout(1500)
     except Exception as e:
@@ -116,10 +116,14 @@ def try_download_veg_pdf(page) -> bool:
     # 3️⃣ 等待下載 PDF
     try:
         with page.expect_download(timeout=30000) as d:
-            # 同樣使用終極武器點擊「下載PDF檔」
             if not click_visible_text(page, "下載PDF檔"):
-                # 備案
-                page.get_by_text("PDF").first.click(timeout=5000)
+                # 備案：確認可見後再點擊
+                btn = page.get_by_text("PDF").first
+                if btn.is_visible():
+                    btn.click(timeout=5000)
+                else:
+                    print("⚠️ PDF 下載按鈕不可見")
+                    return False
 
         d.value.save_as(str(VEG_PDF))
         return True
@@ -176,64 +180,91 @@ def main():
 
     state = load_json(STATE_PATH)
 
-    # 🌟 自動偵測：如果是我們去 GitHub 畫面上「手動點擊」測試的，就忽略時間限制
     is_manual_trigger = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
 
     if not is_manual_trigger and not in_window(now_dt):
         print("⏳ 目前不在允許的時間窗內，跳過執行。")
-        state.update({"time_taipei": now_str, "status": "skip_outside_window", "date": today_str, "detail": "skip_run_outside_0720_0805"})
+        state.update({"time_taipei": now_str, "status": "skip_outside_window", "date": today_str, "detail": "skip_run_outside_0720_0804"})
         save_json(STATE_PATH, state)
         return
 
     print("🚀 開始執行抓取流程...")
     is_success = False
     last_detail = ""
-    
+    last_dark_ratio = None
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        # 把視窗稍微開大一點，避免被強制切換成手機版版面
-        context = browser.new_context(
-            locale="zh-TW",
-            timezone_id="Asia/Taipei",
-            viewport={'width': 1280, 'height': 800}
-        )
-        page = context.new_page()
+        try:
+            context = browser.new_context(
+                locale="zh-TW",
+                timezone_id="Asia/Taipei",
+                viewport={'width': 1280, 'height': 800}
+            )
 
-        for attempt in range(1, 6):
-            print(f"--- 嘗試第 {attempt} 次下載 ---")
-            ok = try_download_veg_pdf(page)
-            if not ok or not VEG_PDF.exists():
-                last_detail = f"attempt_{attempt}_download_failed"
-                print(f"⚠️ 下載失敗或檔案不存在，等待 2 秒後重試...")
-                page.wait_for_timeout(2000)
-                continue
+            for attempt in range(1, 6):
+                print(f"--- 嘗試第 {attempt} 次下載 ---")
 
-            is_tmpl, info = pdf_looks_like_template(VEG_PDF)
-            if is_tmpl:
-                last_detail = f"attempt_{attempt}_pdf_template_no_data"
-                print(f"⚠️ 抓到空白模板 (深色比例 {info.get('dark_ratio')})，等待 3 秒後重試...")
-                page.wait_for_timeout(3000)
-                continue
+                # 修正：每次重試重新建立 page，避免前次狀態殘留
+                page = context.new_page()
+                try:
+                    ok = try_download_veg_pdf(page)
+                except Exception as e:
+                    print(f"⚠️ 第 {attempt} 次發生未預期錯誤: {e}")
+                    ok = False
+                finally:
+                    page.close()
 
-            print(f"✅ 成功取得有效 PDF！(深色比例 {info.get('dark_ratio')})")
-            is_success = True
-            break
+                if not ok or not VEG_PDF.exists():
+                    last_detail = f"attempt_{attempt}_download_failed"
+                    print(f"⚠️ 下載失敗或檔案不存在，等待 2 秒後重試...")
+                    import time
+                    time.sleep(2)
+                    continue
 
-        context.close()
-        browser.close()
+                is_tmpl, info = pdf_looks_like_template(VEG_PDF)
+                last_dark_ratio = info.get("dark_ratio")  # 記錄每次的 dark_ratio
+
+                if is_tmpl:
+                    last_detail = f"attempt_{attempt}_pdf_template_no_data"
+                    print(f"⚠️ 抓到空白模板 (深色比例 {last_dark_ratio})，等待 3 秒後重試...")
+                    import time
+                    time.sleep(3)
+                    continue
+
+                print(f"✅ 成功取得有效 PDF！(深色比例 {last_dark_ratio})")
+                is_success = True
+                break
+
+            context.close()
+        finally:
+            # 修正：確保 browser 一定會被關閉
+            browser.close()
 
     if not is_success:
         print(f"❌ 5 次嘗試都失敗，最後狀態: {last_detail}")
-        state.update({"time_taipei": now_str, "status": "not_ready_or_template" if "template" in last_detail else "veg_download_failed", "date": today_str, "detail": last_detail})
+        state.update({
+            "time_taipei": now_str,
+            "status": "not_ready_or_template" if "template" in last_detail else "veg_download_failed",
+            "date": today_str,
+            "detail": last_detail,
+            "last_dark_ratio": last_dark_ratio,  # 記錄方便日後校準閾值
+        })
         save_json(STATE_PATH, state)
         return
 
     veg_hash = sha256_file(VEG_PDF)
     prev_hash = state.get("veg_pdf_sha256", "")
-    
+
     if veg_hash == prev_hash and MANIFEST_PATH.exists():
         print("ℹ️ PDF 內容無變動，跳過轉檔與更新。")
-        state.update({"time_taipei": now_str, "status": "no_change", "date": today_str, "veg_pdf_sha256": veg_hash})
+        state.update({
+            "time_taipei": now_str,
+            "status": "no_change",
+            "date": today_str,
+            "veg_pdf_sha256": veg_hash,
+            "last_dark_ratio": last_dark_ratio,
+        })
         save_json(STATE_PATH, state)
         return
 
@@ -242,10 +273,23 @@ def main():
     keep_names = {p.name for p in pages}
     clean_extra_pages(keep_names)
 
-    manifest = {"generated_at_taipei": now_str, "date": today_str, "veg_pdf_sha256": veg_hash, "dpi": DPI, "pages": [p.name for p in pages]}
+    manifest = {
+        "generated_at_taipei": now_str,
+        "date": today_str,
+        "veg_pdf_sha256": veg_hash,
+        "dpi": DPI,
+        "pages": [p.name for p in pages],
+    }
     save_json(MANIFEST_PATH, manifest)
 
-    state.update({"time_taipei": now_str, "status": "updated", "date": today_str, "veg_pdf_sha256": veg_hash, "page_count": len(pages)})
+    state.update({
+        "time_taipei": now_str,
+        "status": "updated",
+        "date": today_str,
+        "veg_pdf_sha256": veg_hash,
+        "page_count": len(pages),
+        "last_dark_ratio": last_dark_ratio,
+    })
     save_json(STATE_PATH, state)
     print("🎉 所有流程更新完成！")
 
