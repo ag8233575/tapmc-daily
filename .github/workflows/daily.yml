@@ -1,5 +1,4 @@
 name: TAPMC Daily Reports (VEG only)
-
 on:
   schedule:
     # 台北 07:20–07:58 = UTC 23:20–23:58（前一天），每 2 分鐘一班車
@@ -13,7 +12,7 @@ permissions:
 
 concurrency:
   group: tapmc-daily-veg
-  # 👇 關鍵修復：改為 false，遇到重疊時排隊等候，不殺死正在執行的任務！
+  # 遇到重疊時排隊等候，不殺死正在執行的任務
   cancel-in-progress: false
 
 jobs:
@@ -38,6 +37,13 @@ jobs:
           pip install playwright pdf2image pillow
           playwright install --with-deps chromium
 
+      # 修正：快取 Playwright 瀏覽器，避免每次重新下載（省 2–3 分鐘）
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}
+
       - name: Run script (veg only)
         run: python .github/scripts/run.py
 
@@ -46,11 +52,13 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # 確保 docs 資料夾被完整加入
-          git add docs/ || true
-          git diff --cached --quiet && echo "No changes" && exit 0
+          # 修正：確保 docs 資料夾存在再 add
+          mkdir -p docs
+          git add docs/
 
+          git diff --cached --quiet && echo "No changes" && exit 0
           git commit -m "Update veg pages"
-          # 妥善處理 Git 衝突
-          git pull --rebase --autostash
+
+          # 修正：rebase 失敗時主動中止，避免 workflow 卡住
+          git pull --rebase --autostash || (git rebase --abort && exit 1)
           git push
