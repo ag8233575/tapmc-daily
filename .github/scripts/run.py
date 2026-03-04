@@ -1,6 +1,7 @@
 import os
 import json
 import hashlib
+import subprocess
 from pathlib import Path
 from datetime import datetime, timezone, timedelta, time as dtime
 
@@ -26,9 +27,9 @@ DPI = 220
 # 台北時區
 TPE_TZ = timezone(timedelta(hours=8))
 
-# 🌟 允許更新的時間窗（台北時間）：07:20 開始，08:04 結束（與 cron 對齊）
+# 允許更新的時間窗（台北時間）：07:20 開始，08:04 結束（與 cron 對齊）
 WINDOW_START = dtime(7, 20)
-WINDOW_END = dtime(8, 4)  # 修正：與 cron 00:04 (台北 08:04) 對齊
+WINDOW_END = dtime(8, 4)
 
 def sha256_file(p: Path) -> str:
     h = hashlib.sha256()
@@ -99,7 +100,6 @@ def try_download_veg_pdf(page) -> bool:
     # 2️⃣ 點查詢並等待資料載入
     try:
         if not click_visible_text(page, "查詢"):
-            # 備案：確認可見後再點擊
             btn = page.locator("text=查詢").first
             if btn.is_visible():
                 btn.click(timeout=5000)
@@ -117,7 +117,6 @@ def try_download_veg_pdf(page) -> bool:
     try:
         with page.expect_download(timeout=30000) as d:
             if not click_visible_text(page, "下載PDF檔"):
-                # 備案：確認可見後再點擊
                 btn = page.get_by_text("PDF").first
                 if btn.is_visible():
                     btn.click(timeout=5000)
@@ -132,6 +131,7 @@ def try_download_veg_pdf(page) -> bool:
         return False
 
 def pdf_looks_like_template(pdf_path: Path) -> tuple[bool, dict]:
+    """檢查 PDF 深色比例，過低代表空白模板"""
     info = {}
     try:
         imgs = convert_from_path(str(pdf_path), dpi=120, first_page=1, last_page=1)
@@ -141,7 +141,7 @@ def pdf_looks_like_template(pdf_path: Path) -> tuple[bool, dict]:
         img = imgs[0].convert("L")
         w, h = img.size
         img_small = img.resize((max(200, w // 8), max(200, h // 8)))
-        px = img_small.getdata()
+        px = list(img_small.getdata())
 
         dark = sum(1 for v in px if v < 230)
         total = len(px)
@@ -152,6 +152,22 @@ def pdf_looks_like_template(pdf_path: Path) -> tuple[bool, dict]:
         return is_template, info
     except Exception as e:
         return False, {"reason": "template_check_error", "error": str(e)}
+
+def pdf_contains_today(pdf_path: Path, date_str: str) -> bool:
+    """檢查 PDF 文字內容是否包含今天日期，防止休市空白 PDF 被誤判為有效資料"""
+    try:
+        result = subprocess.run(
+            ["pdftotext", str(pdf_path), "-"],
+            capture_output=True, text=True, timeout=15
+        )
+        contains = date_str in result.stdout
+        if not contains:
+            print(f"⚠️ PDF 內容不含今天日期 {date_str}，可能是休市或舊資料。")
+        return contains
+    except Exception as e:
+        print(f"⚠️ pdftotext 執行失敗: {e}，跳過日期驗證。")
+        # 若 pdftotext 失敗就不擋，避免誤殺正常資料
+        return True
 
 def render_all_pages(pdf_path: Path) -> list[Path]:
     images = convert_from_path(str(pdf_path), dpi=DPI)
@@ -205,7 +221,6 @@ def main():
             for attempt in range(1, 6):
                 print(f"--- 嘗試第 {attempt} 次下載 ---")
 
-                # 修正：每次重試重新建立 page，避免前次狀態殘留
                 page = context.new_page()
                 try:
                     ok = try_download_veg_pdf(page)
@@ -223,11 +238,19 @@ def main():
                     continue
 
                 is_tmpl, info = pdf_looks_like_template(VEG_PDF)
-                last_dark_ratio = info.get("dark_ratio")  # 記錄每次的 dark_ratio
+                last_dark_ratio = info.get("dark_ratio")
 
                 if is_tmpl:
                     last_detail = f"attempt_{attempt}_pdf_template_no_data"
                     print(f"⚠️ 抓到空白模板 (深色比例 {last_dark_ratio})，等待 3 秒後重試...")
+                    import time
+                    time.sleep(3)
+                    continue
+
+                # 🆕 新增：檢查 PDF 是否包含今天日期，防止休市 PDF 被誤判
+                if not pdf_contains_today(VEG_PDF, today_str):
+                    last_detail = f"attempt_{attempt}_pdf_not_today"
+                    print(f"⚠️ PDF 不含今天日期，等待 3 秒後重試...")
                     import time
                     time.sleep(3)
                     continue
@@ -238,17 +261,16 @@ def main():
 
             context.close()
         finally:
-            # 修正：確保 browser 一定會被關閉
             browser.close()
 
     if not is_success:
         print(f"❌ 5 次嘗試都失敗，最後狀態: {last_detail}")
         state.update({
             "time_taipei": now_str,
-            "status": "not_ready_or_template" if "template" in last_detail else "veg_download_failed",
+            "status": "not_ready_or_template" if "template" in last_detail else ("holiday_or_old_data" if "not_today" in last_detail else "veg_download_failed"),
             "date": today_str,
             "detail": last_detail,
-            "last_dark_ratio": last_dark_ratio,  # 記錄方便日後校準閾值
+            "last_dark_ratio": last_dark_ratio,
         })
         save_json(STATE_PATH, state)
         return
