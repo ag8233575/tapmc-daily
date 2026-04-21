@@ -1,9 +1,9 @@
 {
-  "time_taipei": "2026-04-21 08:01:26 +0800",
-  "status": "holiday_or_old_data",
+  "time_taipei": "2026-04-21 10:37:12 +0800",
+  "status": "skip_outside_window",
   "veg_pdf_sha256": "42a838dca2cc2f0a284965836617878869fec971f9c50d817af6a203400763f6",
   "page_count": 1,
   "date": "2026-04-21",
-  "detail": "attempt_5_pdf_not_today",
+  "detail": "skip_run_outside_0720_0804",
   "last_dark_ratio": 0.2993
 }
